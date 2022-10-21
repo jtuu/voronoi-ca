@@ -12,6 +12,7 @@ pollster = "0.2"
 env_logger = "0.9"
 bytemuck = {version = "1.12", features = ["derive"]}
 glam = "0.21"
+rand = "0.8"
 voronator = "0.2"
 
 # wasm32 dependencies

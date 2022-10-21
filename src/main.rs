@@ -6,6 +6,7 @@ use winit::{
     window::Window,
 };
 use wgpu::util::DeviceExt;
+use rand::prelude::*;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -14,30 +15,16 @@ struct Vertex {
     _color: [f32; 3]
 }
 
-fn vertex(pos: [f32; 3], col: [i8; 3]) -> Vertex {
+fn vertex(x: f32, y: f32, r: f32, g: f32, b: f32) -> Vertex {
     Vertex {
-        _pos: [pos[0] as f32, pos[1] as f32, pos[2] as f32, 1.0],
-        _color: [col[0] as f32, col[1] as f32, col[2] as f32],
+        _pos: [x, y, 0.0, 1.0],
+        _color: [r, g, b],
     }
 }
 
-fn create_vertices() -> (Vec<Vertex>, Vec<u16>) {
-    let vertex_data = [
-        vertex([-0.5, -0.5, 0.0], [1, 0, 0]),
-        vertex([0.5, -0.5, 0.0], [1, 0, 0]),
-        vertex([0.0, 0.5, 0.0], [1, 0, 0]),
-    ];
-
-    let index_data: &[u16] = &[
-        0, 1, 2
-    ];
-
-    (vertex_data.to_vec(), index_data.to_vec())
-}
-
 fn generate_matrix(width: f32, height: f32) -> glam::Mat4 {
-    let aspect1 = width / height;
-    let aspect2 = height / width;
+    let aspect1 = width / height * 2.0;
+    let aspect2 = height / width * 2.0;
     let view = glam::Mat4::look_at_rh(
         glam::Vec3::ZERO,
         glam::Vec3::new(0.0, 0.0, 1.0),
@@ -45,6 +32,52 @@ fn generate_matrix(width: f32, height: f32) -> glam::Mat4 {
     );
     let projection =  glam::Mat4::orthographic_rh(-aspect1, aspect1, -aspect2, aspect2, 0.0, 1000.0);
     return view * projection;
+}
+
+fn generate_grid() -> Vec<(f64, f64)> {
+    let mut points = Vec::new();
+    let dim = 10;
+    for x in -dim..dim {
+        for y in -dim..dim {
+            points.push((x as f64 / dim as f64, y as f64 / dim as f64));
+        }
+    }
+    return points;
+}
+
+fn generate_points() -> Vec<(f64, f64)> {
+    let mut points = Vec::new();
+    let mut rng = rand::thread_rng();
+
+    for _ in 0..100 {
+        points.push((rng.gen(), rng.gen()));
+    }
+
+    return points;
+}
+
+fn create_vertices() -> (Vec<Vertex>, Vec<u16>) {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+
+    let mut rng = rand::thread_rng();
+
+    let voronoi = voronator::VoronoiDiagram::<voronator::delaunator::Point>::from_tuple(&(-1.0, -1.0), &(1.0, 1.0), &generate_points()).unwrap();
+    for cell in voronoi.cells() {
+        let points = cell.points();
+        let diagram = voronator::CentroidDiagram::<voronator::delaunator::Point>::new(points).unwrap();
+        let c: f32 = rng.gen();
+        for tri_idx in diagram.delaunay.triangles {
+            let p = &points[tri_idx];
+            vertices.push(vertex(p.x as f32, p.y as f32, c, 0.0, 0.0));
+        }
+    }
+
+    for i in 0..vertices.len() {
+        indices.push(i as u16);
+    }
+
+    return (vertices, indices);
 }
 
 async fn run(event_loop: EventLoop<()>, window: Window) {
@@ -259,7 +292,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     rpass.set_bind_group(0, &bind_group, &[]);
                     rpass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint16);
                     rpass.set_vertex_buffer(0, vertex_buf.slice(..));
-                    rpass.draw_indexed(0 .. 3, 0, 0 .. 1);
+                    rpass.draw_indexed(0 .. index_data.len() as u32, 0, 0 .. (vertex_data.len() / 3) as u32);
                 }
 
                 queue.submit(Some(encoder.finish()));
