@@ -1,4 +1,4 @@
-use std::{borrow::Cow, mem};
+use std::{borrow::Cow, mem, boxed::Box};
 use bytemuck::{Pod, Zeroable};
 use winit::{
     event::{Event, WindowEvent},
@@ -8,6 +8,102 @@ use winit::{
 use wgpu::util::DeviceExt;
 use rand::prelude::*;
 
+fn hsv2rgb(h: f64, s: f64, v: f64) -> (f64, f64, f64) {
+    let hh = (h % 360.0) / 60.0;
+
+    let i = hh as usize;
+    let ff = hh - hh.floor();
+    let p = v * (1.0 - s);
+    let q = v * (1.0 - (s * ff));
+    let t = v * (1.0 - (s * (1.0 - ff)));
+
+    return match i {
+        0 => (v, t, p),
+        1 => (q, v, p),
+        2 => (p, v, t),
+        3 => (p, q, v),
+        4 => (t, p, v),
+        _ => (v, p, q)
+    };
+}
+
+#[derive(Clone, Copy)]
+struct Cell {
+    alive: bool,
+    x: f64,
+    y: f64,
+}
+
+impl Cell {
+    fn new(x: f64, y: f64) -> Self {
+        return Self {
+            x, y,
+            alive: false
+        };
+    }
+
+    fn neighbors(&self) -> Vec<Cell> {
+        return vec![];
+    }
+}
+
+struct CellularAutomaton {
+    read: Vec<Cell>,
+    write: Vec<Cell>
+}
+
+impl CellularAutomaton {
+    fn new() -> Self {
+        let cells = Vec::new();
+        for p in generate_points() {
+
+        }
+        return Self {
+            write: Vec::with_capacity(cells.len()),
+            read: cells,
+        };
+    }
+
+    fn step(&mut self) {
+        for i in 0..self.read.len() {
+            let read = &self.read[i];
+            let write = &mut self.write[i];
+            let mut neighbors = 0;
+            for neigh in read.neighbors()  {
+                if neigh.alive {
+                    neighbors += 1;
+                }
+            }
+            if read.alive {
+                if neighbors < 2 {
+                    write.alive = false;
+                } else if neighbors == 2 || neighbors == 3 {
+                    write.alive = true;
+                } else {
+                    write.alive = false;
+                }
+            } else {
+                if neighbors == 3 {
+                    write.alive = true;
+                } else {
+                    write.alive = false;
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Point {
+    ox: f64,
+    oy: f64,
+    x: f64,
+    y: f64,
+    r: f64,
+    g: f64,
+    b: f64
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Vertex {
@@ -15,10 +111,10 @@ struct Vertex {
     _color: [f32; 3]
 }
 
-fn vertex(x: f32, y: f32, r: f32, g: f32, b: f32) -> Vertex {
+fn vertex(x: f64, y: f64, r: f64, g: f64, b: f64) -> Vertex {
     Vertex {
-        _pos: [x, y, 0.0, 1.0],
-        _color: [r, g, b],
+        _pos: [x as f32, y as f32, 0.0, 1.0],
+        _color: [r as f32, g as f32, b as f32],
     }
 }
 
@@ -45,39 +141,76 @@ fn generate_grid() -> Vec<(f64, f64)> {
     return points;
 }
 
-fn generate_points() -> Vec<(f64, f64)> {
+fn generate_points() -> Vec<Point> {
     let mut points = Vec::new();
     let mut rng = rand::thread_rng();
 
     for _ in 0..100 {
-        points.push((rng.gen(), rng.gen()));
+        let c = if rng.gen() {
+            hsv2rgb(rng.gen_range(0.0..20.0), 0.9, 0.5 + rng.gen_range(0.0..0.5))
+        } else {
+            hsv2rgb(270.0 + rng.gen_range(0.0..20.0), 0.5 + rng.gen_range(0.0..0.2), 0.1 + rng.gen_range(0.0..0.9))
+        };
+        points.push(Point {
+            ox: rng.gen(),
+            oy: rng.gen(),
+            x: 0.0,
+            y: 0.0,
+            r: c.0,
+            g: c.1,
+            b: c.2
+        });
     }
 
     return points;
 }
 
-fn create_vertices() -> (Vec<Vertex>, Vec<u16>) {
+fn create_vertices(points: &[Point]) -> (Vec<Vertex>, Vec<u32>) {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
-    let mut rng = rand::thread_rng();
+    // Voronoify input
+    let sites: Vec<(f64, f64)> = points.iter().map(|p| (p.x, p.y)).collect();
+    let voronoi = voronator::VoronoiDiagram::<voronator::delaunator::Point>::from_tuple(
+        &(-1.0, -1.0), &(1.0, 1.0), &sites).unwrap();
 
-    let voronoi = voronator::VoronoiDiagram::<voronator::delaunator::Point>::from_tuple(&(-1.0, -1.0), &(1.0, 1.0), &generate_points()).unwrap();
-    for cell in voronoi.cells() {
-        let points = cell.points();
-        let diagram = voronator::CentroidDiagram::<voronator::delaunator::Point>::new(points).unwrap();
-        let c: f32 = rng.gen();
-        for tri_idx in diagram.delaunay.triangles {
-            let p = &points[tri_idx];
-            vertices.push(vertex(p.x as f32, p.y as f32, c, 0.0, 0.0));
+    // Iterate over voronoi cells
+    for (cell_idx, cell) in voronoi.cells().iter().enumerate() {
+        // Create vertices by triangulating cells
+        let cell_points = cell.points();
+
+        if let Some(diagram) = voronator::CentroidDiagram::<voronator::delaunator::Point>::new(cell_points) {
+            // Get color from original site point
+            let site_p = &points[cell_idx];
+    
+            // Iterate over cell's triangles
+            for tri_idx in diagram.delaunay.triangles {
+                let tri_p = &cell_points[tri_idx];
+                vertices.push(vertex(tri_p.x, tri_p.y,
+                                     site_p.r, site_p.g, site_p.b));
+            }
         }
     }
 
+    indices.reserve_exact(vertices.len());
     for i in 0..vertices.len() {
-        indices.push(i as u16);
+        indices.push(i as u32);
     }
 
     return (vertices, indices);
+}
+
+fn animate(points: &mut [Point]) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap().as_millis() as f64;
+        
+    for point in points {
+        let sin = ((now / 1000000.0 + point.ox) * 100.0).sin();
+        let cos = ((now / 1000000.0 + point.oy) * 100.0).cos();
+        point.x = point.ox + sin;
+        point.y = point.oy + cos;
+    }
 }
 
 async fn run(event_loop: EventLoop<()>, window: Window) {
@@ -109,19 +242,22 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         .await
         .expect("Failed to create device");
     
-    let vertex_size = mem::size_of::<Vertex>();
-    let (vertex_data, index_data) = create_vertices();
+    let vertex_size = mem::size_of::<Vertex>() as wgpu::BufferAddress;
+    let mut points = generate_points();
+    let max_vert_count = points.len() * 100; // Rough estimate of maximum number of vertices
 
-    let vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let vertex_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Vertex Buffer"),
-        contents: bytemuck::cast_slice(&vertex_data),
-        usage: wgpu::BufferUsages::VERTEX,
+        size: (max_vert_count * mem::size_of::<Vertex>()) as wgpu::BufferAddress,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false
     });
 
-    let index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let index_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Index Buffer"),
-        contents: bytemuck::cast_slice(&index_data),
-        usage: wgpu::BufferUsages::INDEX,
+        size: (max_vert_count * mem::size_of::<u32>()) as wgpu::BufferAddress,
+        usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false
     });
 
     let vertex_buffers = [wgpu::VertexBufferLayout {
@@ -222,6 +358,11 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 
     surface.configure(&device, &config);
 
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut last_frame_inst = std::time::Instant::now();
+    #[cfg(not(target_arch = "wasm32"))]
+    let (mut frame_count, mut accum_time) = (0, 0.0);
+
     event_loop.run(move |event, _, control_flow| {
         // Have the closure take ownership of the resources.
         // `event_loop.run` never returns, therefore we must do this to ensure
@@ -261,7 +402,33 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 // On macos the window needs to be redrawn manually after resizing
                 window.request_redraw();
             }
+            Event::RedrawEventsCleared => {
+                window.request_redraw();
+            }
             Event::RedrawRequested(_) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    accum_time += last_frame_inst.elapsed().as_secs_f32();
+                    last_frame_inst = std::time::Instant::now();
+                    frame_count += 1;
+                    if frame_count == 100 {
+                        println!(
+                            "Avg frame time {}ms",
+                            accum_time * 1000.0 / frame_count as f32
+                        );
+                        accum_time = 0.0;
+                        frame_count = 0;
+                    }
+                }
+
+                // Update vertices
+                animate(&mut points);
+                let (vertex_data, index_data) = create_vertices(&points);
+                let ind_bytes = bytemuck::cast_slice(&index_data);
+                let vert_bytes = bytemuck::cast_slice(&vertex_data);
+                queue.write_buffer(&index_buf, 0, ind_bytes);
+                queue.write_buffer(&vertex_buf, 0, vert_bytes);
+
                 let frame = surface
                     .get_current_texture()
                     .expect("Failed to acquire next swap chain texture");
@@ -290,8 +457,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     });
                     rpass.set_pipeline(&render_pipeline);
                     rpass.set_bind_group(0, &bind_group, &[]);
-                    rpass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint16);
-                    rpass.set_vertex_buffer(0, vertex_buf.slice(..));
+                    rpass.set_index_buffer(index_buf.slice(0..ind_bytes.len() as wgpu::BufferAddress), wgpu::IndexFormat::Uint32);
+                    rpass.set_vertex_buffer(0, vertex_buf.slice(0..vert_bytes.len() as wgpu::BufferAddress));
                     rpass.draw_indexed(0 .. index_data.len() as u32, 0, 0 .. (vertex_data.len() / 3) as u32);
                 }
 
