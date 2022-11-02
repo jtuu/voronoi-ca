@@ -1,217 +1,15 @@
-use std::{borrow::Cow, mem, boxed::Box};
-use bytemuck::{Pod, Zeroable};
+mod simulation;
+mod common;
+
+use std::{borrow::Cow, mem};
 use winit::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::Window,
 };
 use wgpu::util::DeviceExt;
-use rand::prelude::*;
-
-fn hsv2rgb(h: f64, s: f64, v: f64) -> (f64, f64, f64) {
-    let hh = (h % 360.0) / 60.0;
-
-    let i = hh as usize;
-    let ff = hh - hh.floor();
-    let p = v * (1.0 - s);
-    let q = v * (1.0 - (s * ff));
-    let t = v * (1.0 - (s * (1.0 - ff)));
-
-    return match i {
-        0 => (v, t, p),
-        1 => (q, v, p),
-        2 => (p, v, t),
-        3 => (p, q, v),
-        4 => (t, p, v),
-        _ => (v, p, q)
-    };
-}
-
-#[derive(Clone, Copy)]
-struct Cell {
-    alive: bool,
-    x: f64,
-    y: f64,
-}
-
-impl Cell {
-    fn new(x: f64, y: f64) -> Self {
-        return Self {
-            x, y,
-            alive: false
-        };
-    }
-
-    fn neighbors(&self) -> Vec<Cell> {
-        return vec![];
-    }
-}
-
-struct CellularAutomaton {
-    read: Vec<Cell>,
-    write: Vec<Cell>
-}
-
-impl CellularAutomaton {
-    fn new() -> Self {
-        let cells = Vec::new();
-        for p in generate_points() {
-
-        }
-        return Self {
-            write: Vec::with_capacity(cells.len()),
-            read: cells,
-        };
-    }
-
-    fn step(&mut self) {
-        for i in 0..self.read.len() {
-            let read = &self.read[i];
-            let write = &mut self.write[i];
-            let mut neighbors = 0;
-            for neigh in read.neighbors()  {
-                if neigh.alive {
-                    neighbors += 1;
-                }
-            }
-            if read.alive {
-                if neighbors < 2 {
-                    write.alive = false;
-                } else if neighbors == 2 || neighbors == 3 {
-                    write.alive = true;
-                } else {
-                    write.alive = false;
-                }
-            } else {
-                if neighbors == 3 {
-                    write.alive = true;
-                } else {
-                    write.alive = false;
-                }
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct Point {
-    ox: f64,
-    oy: f64,
-    x: f64,
-    y: f64,
-    r: f64,
-    g: f64,
-    b: f64
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct Vertex {
-    _pos: [f32; 4],
-    _color: [f32; 3]
-}
-
-fn vertex(x: f64, y: f64, r: f64, g: f64, b: f64) -> Vertex {
-    Vertex {
-        _pos: [x as f32, y as f32, 0.0, 1.0],
-        _color: [r as f32, g as f32, b as f32],
-    }
-}
-
-fn generate_matrix(width: f32, height: f32) -> glam::Mat4 {
-    let aspect1 = width / height * 2.0;
-    let aspect2 = height / width * 2.0;
-    let view = glam::Mat4::look_at_rh(
-        glam::Vec3::ZERO,
-        glam::Vec3::new(0.0, 0.0, 1.0),
-        glam::Vec3::Y
-    );
-    let projection =  glam::Mat4::orthographic_rh(-aspect1, aspect1, -aspect2, aspect2, 0.0, 1000.0);
-    return view * projection;
-}
-
-fn generate_grid() -> Vec<(f64, f64)> {
-    let mut points = Vec::new();
-    let dim = 10;
-    for x in -dim..dim {
-        for y in -dim..dim {
-            points.push((x as f64 / dim as f64, y as f64 / dim as f64));
-        }
-    }
-    return points;
-}
-
-fn generate_points() -> Vec<Point> {
-    let mut points = Vec::new();
-    let mut rng = rand::thread_rng();
-
-    for _ in 0..100 {
-        let c = if rng.gen() {
-            hsv2rgb(rng.gen_range(0.0..20.0), 0.9, 0.5 + rng.gen_range(0.0..0.5))
-        } else {
-            hsv2rgb(270.0 + rng.gen_range(0.0..20.0), 0.5 + rng.gen_range(0.0..0.2), 0.1 + rng.gen_range(0.0..0.9))
-        };
-        points.push(Point {
-            ox: rng.gen(),
-            oy: rng.gen(),
-            x: 0.0,
-            y: 0.0,
-            r: c.0,
-            g: c.1,
-            b: c.2
-        });
-    }
-
-    return points;
-}
-
-fn create_vertices(points: &[Point]) -> (Vec<Vertex>, Vec<u32>) {
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
-
-    // Voronoify input
-    let sites: Vec<(f64, f64)> = points.iter().map(|p| (p.x, p.y)).collect();
-    let voronoi = voronator::VoronoiDiagram::<voronator::delaunator::Point>::from_tuple(
-        &(-1.0, -1.0), &(1.0, 1.0), &sites).unwrap();
-
-    // Iterate over voronoi cells
-    for (cell_idx, cell) in voronoi.cells().iter().enumerate() {
-        // Create vertices by triangulating cells
-        let cell_points = cell.points();
-
-        if let Some(diagram) = voronator::CentroidDiagram::<voronator::delaunator::Point>::new(cell_points) {
-            // Get color from original site point
-            let site_p = &points[cell_idx];
-    
-            // Iterate over cell's triangles
-            for tri_idx in diagram.delaunay.triangles {
-                let tri_p = &cell_points[tri_idx];
-                vertices.push(vertex(tri_p.x, tri_p.y,
-                                     site_p.r, site_p.g, site_p.b));
-            }
-        }
-    }
-
-    indices.reserve_exact(vertices.len());
-    for i in 0..vertices.len() {
-        indices.push(i as u32);
-    }
-
-    return (vertices, indices);
-}
-
-fn animate(points: &mut [Point]) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap().as_millis() as f64;
-        
-    for point in points {
-        let sin = ((now / 1000000.0 + point.ox) * 100.0).sin();
-        let cos = ((now / 1000000.0 + point.oy) * 100.0).cos();
-        point.x = point.ox + sin;
-        point.y = point.oy + cos;
-    }
-}
+use common::*;
+use simulation::*;
 
 async fn run(event_loop: EventLoop<()>, window: Window) {
     let size = window.inner_size();
@@ -243,8 +41,9 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         .expect("Failed to create device");
     
     let vertex_size = mem::size_of::<Vertex>() as wgpu::BufferAddress;
-    let mut points = generate_points();
-    let max_vert_count = points.len() * 100; // Rough estimate of maximum number of vertices
+    let point_count = 500;
+    let mut simu = CellularAutomaton::new(point_count);
+    let max_vert_count = point_count * 100; // Rough estimate of maximum number of vertices
 
     let vertex_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Vertex Buffer"),
@@ -362,6 +161,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     let mut last_frame_inst = std::time::Instant::now();
     #[cfg(not(target_arch = "wasm32"))]
     let (mut frame_count, mut accum_time) = (0, 0.0);
+    let mut sim_running = false;
 
     event_loop.run(move |event, _, control_flow| {
         // Have the closure take ownership of the resources.
@@ -384,8 +184,28 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             } => {
                 match state {
                     winit::event::ElementState::Pressed => {
-                        if keycode == winit::event::VirtualKeyCode::Escape {
-                            *control_flow = ControlFlow::Exit
+                        match keycode {
+                            winit::event::VirtualKeyCode::R => {
+                                simu.randomize_rule();
+                            },
+                            winit::event::VirtualKeyCode::S => {
+                                simu.randomize_state();
+                            },
+                            winit::event::VirtualKeyCode::Space => {
+                                simu.randomize_rule();
+                                simu.randomize_state();
+                            },
+                            winit::event::VirtualKeyCode::A => {
+                                simu.toggle_animation();
+                            },
+                            winit::event::VirtualKeyCode::N => {
+                                simu.nice_rule();
+                            },
+                            winit::event::VirtualKeyCode::Return => {
+                                sim_running = !sim_running;
+                            },
+                            winit::event::VirtualKeyCode::Escape => *control_flow = ControlFlow::Exit,
+                            _ => ()
                         }
                     },
                     _ => {}
@@ -420,10 +240,12 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         frame_count = 0;
                     }
                 }
-
+                
+                if sim_running {
+                    simu.update();
+                }
                 // Update vertices
-                animate(&mut points);
-                let (vertex_data, index_data) = create_vertices(&points);
+                let (vertex_data, index_data) = simu.create_vertices();
                 let ind_bytes = bytemuck::cast_slice(&index_data);
                 let vert_bytes = bytemuck::cast_slice(&vertex_data);
                 queue.write_buffer(&index_buf, 0, ind_bytes);
@@ -476,7 +298,9 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 
 fn main() {
     let event_loop = EventLoop::new();
-    let window = winit::window::Window::new(&event_loop).unwrap();
+    let window = winit::window::WindowBuilder::new()
+        .with_inner_size(winit::dpi::LogicalSize::new(1000, 1000))
+        .build(&event_loop).unwrap();
     #[cfg(not(target_arch = "wasm32"))]
     {
         env_logger::init();
